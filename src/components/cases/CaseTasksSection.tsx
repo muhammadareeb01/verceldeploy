@@ -1,5 +1,4 @@
-// src/components/cases/CaseTasksSection.tsx
-import React, { useState } from "react";
+import React from "react";
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,59 +14,61 @@ import { Badge } from "@/components/ui/badge";
 import {
   CheckCircle,
   XCircle,
-  MoreHorizontal,
-  Edit,
-  Trash,
+  UserPlus,
   Loader2,
 } from "lucide-react";
 import { format } from "date-fns";
-import { toast } from "sonner";
+import { useQuery } from "@tanstack/react-query";
 
-// Updated imports for types and hooks
-import {
-  // Using useTaskInstancesByCaseIdQuery for fetching tasks specific to this case
-  useTaskInstancesByCaseIdQuery, // UPDATED
-  useDeleteTaskInstanceMutation,  // UPDATED
-  // useToggleTaskInstanceStatusMutation, // Import if you plan to use status toggling directly here
-} from "@/hooks/useTasks"; // Or from "@/hooks/useTaskInstances" if you renamed the file
+import { supabase } from "@/integrations/supabase/client";
 
-import {
-  ApiTaskInstance,
-  TaskInstanceStatus,
-  // TaskInstanceFilter, // Not directly used for filtering within this component, but by the hook
-} from "@/types/tasks";
+// Types
+import { ApiTask, TaskOriginType } from "@/types/tasks";
 
-import { TaskEditModal } from "@/components/tasks/TaskEditModal";
-import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "../ui/dropdown-menu"; // Assuming this path is correct
+// Assuming these are the correct types and hooks for case_tasks
+import { transformDbRecordToDefinitionApiTask } from "@/hooks/useTasks";
 
 interface CaseTasksSectionProps {
   caseId: string;
 }
 
 const CaseTasksSection: React.FC<CaseTasksSectionProps> = ({ caseId }) => {
+  // Custom query to fetch case_tasks based on case_id with console logs
   const {
-    data: taskInstances = [], // RENAMED data variable for clarity
+    data: caseTasks = [],
     isLoading,
     error,
-  } = useTaskInstancesByCaseIdQuery(caseId); // UPDATED to specific hook for clarity
+  } = useQuery<ApiTask[], Error>({
+    queryKey: ["caseTasks", caseId],
+    queryFn: async () => {
+      console.log(`Fetching case_tasks for caseId: ${caseId}`);
+      const { data, error } = await supabase
+        .from("case_tasks")
+        .select("task_id:case_task_id, task_name, description, task_category_id, document_type_id, priority, created_at, updated_at, case_id")
+        .eq("case_id", caseId);
 
-  const deleteInstanceMutation = useDeleteTaskInstanceMutation(); // UPDATED hook name
-  const isDeleting = deleteInstanceMutation.isPending; // Or .isLoading for TanStack Query v4
+      if (error) {
+        console.error("Supabase query error:", error);
+        throw error;
+      }
 
-  const [selectedTaskInstance, setSelectedTaskInstance] = useState<ApiTaskInstance | null>(null); // UPDATED type
-  const [isTaskEditModalOpen, setIsTaskEditModalOpen] = useState(false);
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [taskInstanceToDelete, setTaskInstanceToDelete] = useState<ApiTaskInstance | null>(null); // UPDATED type
+      console.log("Raw data from Supabase:", data);
+
+      const transformedTasks = data.map((record) =>
+        transformDbRecordToDefinitionApiTask(record, TaskOriginType.CASE)
+      );
+      console.log("Transformed tasks before filtering:", transformedTasks);
+
+      const filteredTasks = transformedTasks.filter((task): task is ApiTask => task !== null);
+      console.log("Filtered tasks after removing nulls:", filteredTasks);
+
+      return filteredTasks;
+    },
+    enabled: !!caseId,
+  });
 
   if (error) {
+    console.error("Query error:", error.message);
     return (
       <Card>
         <CardHeader><CardTitle>Tasks</CardTitle></CardHeader>
@@ -77,6 +78,7 @@ const CaseTasksSection: React.FC<CaseTasksSectionProps> = ({ caseId }) => {
   }
 
   if (isLoading) {
+    console.log("Loading state is true");
     return (
       <Card>
         <CardHeader><CardTitle>Tasks</CardTitle></CardHeader>
@@ -85,116 +87,65 @@ const CaseTasksSection: React.FC<CaseTasksSectionProps> = ({ caseId }) => {
     );
   }
 
-  const handleTaskEdit = (task: ApiTaskInstance) => { // UPDATED type
-    setSelectedTaskInstance(task);
-    setIsTaskEditModalOpen(true);
+  console.log("Final caseTasks data rendered:", caseTasks);
+
+  // Placeholder function for the "Assigned To" button
+  const handleAssignClick = (task: ApiTask) => {
+    console.log(`Assign button clicked for task: ${task.task_name} (case_task_id: ${task.case_task_id})`);
+    // Further implementation to be provided later
   };
 
-  const handleEditModalClose = () => {
-    setIsTaskEditModalOpen(false);
-    setSelectedTaskInstance(null);
-  };
-
-  const handleDeleteClick = (task: ApiTaskInstance) => { // UPDATED type
-    setTaskInstanceToDelete(task);
-    setDeleteDialogOpen(true);
-  };
-
-  const handleDeleteConfirm = () => {
-    if (!taskInstanceToDelete || !taskInstanceToDelete.task_instance_id) return; // UPDATED ID check
-
-    deleteInstanceMutation.mutate(taskInstanceToDelete.task_instance_id, { // UPDATED ID
-      onSuccess: () => {
-        // Toast is handled by the hook's onSuccess
-        setDeleteDialogOpen(false);
-        setTaskInstanceToDelete(null);
-      },
-      onError: (err) => { // Type error if needed: (err: Error)
-        // Toast is handled by the hook's onError
-        setDeleteDialogOpen(false);
-        setTaskInstanceToDelete(null);
-      },
-    });
-  };
-
-  const getStatusBadge = (status?: TaskInstanceStatus | null) => { // UPDATED type
-    switch (status) {
-      case TaskInstanceStatus.COMPLETED: // UPDATED enum usage
-        return <Badge variant="default"><CheckCircle className="h-4 w-4 mr-1" />Completed</Badge>;
-      case TaskInstanceStatus.IN_PROGRESS: // UPDATED enum usage
-        return <Badge variant="secondary">In Progress</Badge>;
-      case TaskInstanceStatus.NOT_STARTED: // UPDATED enum usage
-      case TaskInstanceStatus.BLOCKED:     // UPDATED enum usage
-      case TaskInstanceStatus.ON_HOLD:     // UPDATED enum usage
-      default:
-        return <Badge variant="outline"><XCircle className="h-4 w-4 mr-1" />{status ? status.replace(/_/g, " ") : "Pending"}</Badge>;
-    }
+  const getStatusBadge = (status?: string | null) => {
+    return status ? (
+      <Badge variant="default"><CheckCircle className="h-4 w-4 mr-1" />{status.replace(/_/g, " ")}</Badge>
+    ) : (
+      <Badge variant="outline"><XCircle className="h-4 w-4 mr-1" />Pending</Badge>
+    );
   };
 
   return (
     <Card>
       <CardHeader>
         <div className="flex justify-between items-center">
-          <CardTitle>Tasks ({taskInstances.length})</CardTitle> {/* UPDATED variable */}
+          <CardTitle>Tasks ({caseTasks.length})</CardTitle>
           <Button asChild size="sm">
-            {/* This link implies a separate page/route for creating tasks for a specific case */}
-            {/* Ensure TaskFormDialog or the target page can handle caseId to create TaskInstanceCreateData */}
-            <Link to={`/cases/${caseId}/tasks/new`}>Add Task Instance</Link>
+            <Link to={`/cases/${caseId}/tasks/new`}>Add Task</Link>
           </Button>
         </div>
       </CardHeader>
       <CardContent className="overflow-x-auto">
-        {taskInstances.length > 0 ? (
+        {caseTasks.length > 0 ? (
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Task Name</TableHead>
-                <TableHead>Due Date</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Assigned To</TableHead>
+                <TableHead>Description</TableHead>
+                <TableHead>Priority</TableHead>
+                <TableHead>Created At</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {taskInstances.map((taskInstance) => ( // UPDATED variable
-                <TableRow key={taskInstance.task_instance_id}> {/* UPDATED ID */}
-                  <TableCell className="font-medium">{taskInstance.task_name}</TableCell>
+              {caseTasks.map((task) => (
+                <TableRow key={task.case_task_id}>
+                  <TableCell className="font-medium">{task.task_name}</TableCell>
+                  <TableCell>{task.description || "N/A"}</TableCell>
+                  <TableCell>{task.priority || 0}</TableCell>
                   <TableCell>
-                    {taskInstance.due_date
-                      ? format(new Date(taskInstance.due_date), "MMM dd, yyyy")
+                    {task.created_at
+                      ? format(new Date(task.created_at), "MMM dd, yyyy")
                       : "N/A"}
                   </TableCell>
-                  <TableCell>{getStatusBadge(taskInstance.status)}</TableCell>
-                  <TableCell>{taskInstance.assignedUser?.full_name || "Unassigned"}</TableCell>
                   <TableCell className="text-right">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" className="h-8 w-8 p-0">
-                          <span className="sr-only">Open menu</span>
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={() => handleTaskEdit(taskInstance)}>
-                          <Edit className="mr-2 h-4 w-4" />
-                          Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => handleDeleteClick(taskInstance)}
-                          className="text-destructive"
-                          disabled={isDeleting && taskInstanceToDelete?.task_instance_id === taskInstance.task_instance_id} // UPDATED ID
-                        >
-                          {isDeleting && taskInstanceToDelete?.task_instance_id === taskInstance.task_instance_id ? ( // UPDATED ID
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          ) : (
-                            <Trash className="mr-2 h-4 w-4" />
-                          )}
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleAssignClick(task)}
+                      className="flex items-center gap-1"
+                    >
+                      <UserPlus className="h-4 w-4" />
+                      Assigned To
+                    </Button>
                   </TableCell>
                 </TableRow>
               ))}
@@ -204,27 +155,6 @@ const CaseTasksSection: React.FC<CaseTasksSectionProps> = ({ caseId }) => {
           <p className="text-muted-foreground">No tasks assigned to this case yet.</p>
         )}
       </CardContent>
-
-      {selectedTaskInstance && isTaskEditModalOpen && ( // Ensure modal renders only when intended
-        <TaskEditModal
-          taskInstanceId={selectedTaskInstance.task_instance_id} // UPDATED prop and ID
-          isOpen={isTaskEditModalOpen}
-          onClose={handleEditModalClose}
-        />
-      )}
-
-      {taskInstanceToDelete && (
-        <ConfirmationDialog
-          open={deleteDialogOpen}
-          onOpenChange={setDeleteDialogOpen}
-          title="Delete Task Instance"
-          description={`Are you sure you want to delete "${taskInstanceToDelete.task_name}"? This action cannot be undone.`}
-          confirmLabel="Delete"
-          cancelLabel="Cancel"
-          onConfirm={handleDeleteConfirm}
-          variant="destructive"
-        />
-      )}
     </Card>
   );
 };

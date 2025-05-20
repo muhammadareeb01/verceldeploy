@@ -235,7 +235,7 @@ export type TaskDefinitionCreateInput =
   | ({ formType: "case" } & Partial<Omit<CaseTask, 'case_task_id' | 'origin_type' | 'created_at' | 'updated_at'>>)
   | ({ formType: "company" } & Partial<Omit<CompanyTask, 'company_task_id' | 'origin_type' | 'created_at' | 'updated_at'>>);
 
-const transformDbRecordToDefinitionApiTask = (dbRecord: any, originType: TaskOriginType): ApiTask | null => {
+export const transformDbRecordToDefinitionApiTask = (dbRecord: any, originType: TaskOriginType): ApiTask | null => {
   if (!dbRecord) return null;
   const specificId = dbRecord.task_id;
   if (!specificId) {
