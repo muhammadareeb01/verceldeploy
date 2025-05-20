@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { debounce } from "lodash";
 import { PlusCircle, Filter, ListFilter } from "lucide-react";
@@ -51,13 +51,13 @@ import { toast } from "sonner";
 interface Service { service_id: string; service_name: string; }
 interface CaseDataType {
   case_id: string;
-  company_id: string;
+  company_id: string | null; // Allow null for cases without a company
   service_id?: string | null;
   notes?: string | null;
   case_title: string;
 }
 interface DocumentType { doc_type_id: string; doc_type_name: string; }
-interface Company { company_id: string; name: string; } // Ensure 'name' is the correct field for company name
+interface Company { company_id: string; name: string; }
 interface UserDetail { id: string; full_name: string; role: UserRole | string; avatar_url?: string; }
 interface TaskCategory { category_id: string; category_name: string; }
 
@@ -122,11 +122,13 @@ const Tasks: React.FC = () => {
     searchQuery?: string;
     service_id?: string;
     case_id?: string;
-    company_id?: string;
+    company_id?: string; // Used for Company Tab filter
     task_category_id?: string;
     priority?: number[] | number;
     document_type_id?: string;
   }>({});
+
+  const [selectedCompanyForCaseFilter, setSelectedCompanyForCaseFilter] = useState<string | undefined>(undefined);
 
   const [taskSort, setTaskSort] = useState<{ field: string; direction: "asc" | "desc" }>({
     field: "created_at",
@@ -147,7 +149,7 @@ const Tasks: React.FC = () => {
   const { data: categories = [] } = useQuery<TaskCategory[]>({ queryKey: ["taskCategoriesForFilter"], queryFn: async () => { const { data, error } = await supabase.from("task_categories").select("category_id, category_name"); if (error) throw error; return data || []; }});
   const { data: users = [] } = useQuery<UserDetail[]>({ queryKey: ["profilesForTaskAssignment"], queryFn: async () => { const { data, error } = await supabase.from("profiles").select("id, full_name, role, avatar_url").order("full_name", { ascending: true }); if (error) { console.error("Error fetching profiles:", error); throw error; } return data || []; }});
   const { data: companies = [], isLoading: isLoadingCompanies } = useQuery<Company[]>({ queryKey: ["companiesForTaskForm"], queryFn: async () => { const { data, error } = await supabase.from("companies").select("company_id, name").order("name", { ascending: true }); if (error) { console.error("Error fetching companies:", error); throw error; } return data || []; }});
-  const { data: cases = [] } = useQuery<CaseDataType[]>({ queryKey: ["casesForTaskForm"], queryFn: async () => { const { data, error } = await supabase.from("cases").select("case_id, company_id, service_id, notes"); if (error) { console.error("Error fetching cases:", error); throw error; } return (data || []).map(c => ({...c, case_title: c.notes || `Case ${c.case_id.substring(0, 8)}`})); }});
+  const { data: cases = [], isLoading: isLoadingCasesData } = useQuery<CaseDataType[]>({ queryKey: ["casesForTaskForm"], queryFn: async () => { const { data, error } = await supabase.from("cases").select("case_id, company_id, service_id, notes").order("case_id", { ascending: false }); if (error) { console.error("Error fetching cases:", error); throw error; } return (data || []).map(c => ({...c, company_id: c.company_id || null, case_title: c.notes || `Case ${c.case_id.substring(0, 8)}`})); }});
   const { data: services = [], isLoading: isLoadingServices } = useQuery<Service[]>({ queryKey: ["servicesForTaskForm"], queryFn: async () => { const { data, error } = await supabase.from("services").select("service_id, service_name").order("service_name", { ascending: true }); if (error) { console.error("Error fetching services:", error); throw error; } return data || []; }});
   const { data: documentTypes = [] } = useQuery<DocumentType[]>({ queryKey: ["documentTypesForTaskForm"], queryFn: async () => { const { data, error } = await supabase.from("document_types").select("doc_type_id, doc_type_name"); if (error) { console.error("Error fetching document types:", error); throw error; } return data || []; }});
 
@@ -171,37 +173,62 @@ const Tasks: React.FC = () => {
   const handleFilterChange = (newFilters: Partial<typeof taskFilter>) => setTaskFilter(prev => ({ ...prev, ...newFilters }));
   const handleSortChange = (newSort: { field: string; direction: "asc" | "desc" }) => setTaskSort(newSort);
   const handleSearchChange = (query: string) => debouncedSetSearchFilter(query);
+
   const handleClearFilters = () => {
     const currentSearchQuery = taskFilter.searchQuery;
     setTaskFilter({
       searchQuery: currentSearchQuery || undefined,
       service_id: undefined,
       case_id: undefined,
-      company_id: undefined, // Ensure company_id is cleared
+      company_id: undefined,
       task_category_id: undefined,
       priority: undefined,
       document_type_id: undefined,
     });
+    setSelectedCompanyForCaseFilter(undefined);
     setTaskSort({ field: "created_at", direction: "desc" });
   };
+
   const handleServiceFilterDropdownChange = (serviceId: string | undefined) => {
-    setTaskFilter(prev => ({
-      ...prev,
-      service_id: serviceId,
-    }));
+    setTaskFilter(prev => ({ ...prev, service_id: serviceId }));
   };
+
   const handleCompanyFilterDropdownChange = (companyId: string | undefined) => {
-    setTaskFilter(prev => ({
-      ...prev,
-      company_id: companyId,
-    }));
+    setTaskFilter(prev => ({ ...prev, company_id: companyId }));
   };
+
+  const handleCompanyForCaseFilterChange = (companyId: string | undefined) => {
+    setSelectedCompanyForCaseFilter(companyId);
+    if (taskFilter.case_id) {
+      const currentCaseDetails = cases.find(c => c.case_id === taskFilter.case_id);
+      if (companyId && currentCaseDetails && currentCaseDetails.company_id !== companyId) {
+        setTaskFilter(prev => ({ ...prev, case_id: undefined }));
+      } else if (!companyId && currentCaseDetails && currentCaseDetails.company_id) {
+        setTaskFilter(prev => ({ ...prev, case_id: undefined }));
+      }
+    }
+  };
+
+  const handleCaseFilterDropdownChange = (caseId: string | undefined) => {
+    setTaskFilter(prev => ({ ...prev, case_id: caseId }));
+  };
+
+  const filteredCasesForDropdown = useMemo(() => {
+    if (!selectedCompanyForCaseFilter) {
+      return cases;
+    }
+    return cases.filter(c => c.company_id === selectedCompanyForCaseFilter);
+  }, [cases, selectedCompanyForCaseFilter]);
+
   const renderBadgeCount = (count: number, isLoading: boolean) => isLoading ? "..." : count;
 
   if (isTasksError && tasksApiError) { return ( <div className="container mx-auto p-4"> <h1 className="text-2xl font-bold text-red-600">Error</h1> <p className="text-muted-foreground">{tasksApiError.message || "Failed to load tasks."}</p> </div> ); }
 
   const selectedServiceName = taskFilter.service_id ? services.find(s => s.service_id === taskFilter.service_id)?.service_name : null;
-  const selectedCompanyName = taskFilter.company_id ? companies.find(c => c.company_id === taskFilter.company_id)?.name : null;
+  const selectedCompanyNameForCompanyTab = taskFilter.company_id ? companies.find(c => c.company_id === taskFilter.company_id)?.name : null;
+  const selectedCompanyNameForCaseTab = selectedCompanyForCaseFilter ? companies.find(c => c.company_id === selectedCompanyForCaseFilter)?.name : null;
+  const selectedCaseNameForCaseTab = taskFilter.case_id ? cases.find(c => c.case_id === taskFilter.case_id)?.case_title : null;
+
 
   return (
     <div className="container mx-auto p-4 md:p-6">
@@ -262,19 +289,11 @@ const Tasks: React.FC = () => {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="max-h-80 overflow-y-auto">
-                          <DropdownMenuItem onClick={() => handleServiceFilterDropdownChange(undefined)}>
-                            All Services
-                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleServiceFilterDropdownChange(undefined)}> All Services </DropdownMenuItem>
                           <DropdownMenuSeparator />
-                          {isLoadingServices ? (
-                            <DropdownMenuItem disabled>Loading services...</DropdownMenuItem>
-                          ) : (
+                          {isLoadingServices ? ( <DropdownMenuItem disabled>Loading services...</DropdownMenuItem> ) : (
                             services.map((service) => (
-                              <DropdownMenuItem
-                                key={service.service_id}
-                                onClick={() => handleServiceFilterDropdownChange(service.service_id)}
-                                disabled={taskFilter.service_id === service.service_id}
-                              >
+                              <DropdownMenuItem key={service.service_id} onClick={() => handleServiceFilterDropdownChange(service.service_id)} disabled={taskFilter.service_id === service.service_id} >
                                 {service.service_name}
                               </DropdownMenuItem>
                             ))
@@ -290,27 +309,73 @@ const Tasks: React.FC = () => {
                           <Button variant="outline" size="sm" className="flex items-center gap-1 min-w-[150px] justify-start">
                             <ListFilter className="h-4 w-4" />
                             <span className="truncate">
-                              {selectedCompanyName ? `Company: ${selectedCompanyName}` : "Filter by Company"}
+                              {selectedCompanyNameForCompanyTab ? `Company: ${selectedCompanyNameForCompanyTab}` : "Filter by Company"}
                             </span>
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="max-h-80 overflow-y-auto">
-                          <DropdownMenuItem onClick={() => handleCompanyFilterDropdownChange(undefined)}>
-                            All Companies
-                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => handleCompanyFilterDropdownChange(undefined)}> All Companies </DropdownMenuItem>
                           <DropdownMenuSeparator />
-                          {isLoadingCompanies ? (
-                            <DropdownMenuItem disabled>Loading companies...</DropdownMenuItem>
-                          ) : (
+                          {isLoadingCompanies ? ( <DropdownMenuItem disabled>Loading companies...</DropdownMenuItem> ) : (
                             companies.map((company) => (
-                              <DropdownMenuItem
-                                key={company.company_id}
-                                onClick={() => handleCompanyFilterDropdownChange(company.company_id)}
-                                disabled={taskFilter.company_id === company.company_id}
-                              >
+                              <DropdownMenuItem key={company.company_id} onClick={() => handleCompanyFilterDropdownChange(company.company_id)} disabled={taskFilter.company_id === company.company_id} >
                                 {company.name}
                               </DropdownMenuItem>
                             ))
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  )}
+                  {tabValue === TaskOriginType.CASE && (
+                    <div className="flex justify-end items-center gap-2 mb-4">
+                      {/* Company Dropdown for Case Filter */}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="outline" size="sm" className="flex items-center gap-1 min-w-[160px] justify-start">
+                            <ListFilter className="h-4 w-4" />
+                            <span className="truncate">
+                              {selectedCompanyNameForCaseTab ? `Cpny: ${selectedCompanyNameForCaseTab}`: "All Companies (Cases)"}
+                            </span>
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="max-h-80 overflow-y-auto">
+                          <DropdownMenuItem onClick={() => handleCompanyForCaseFilterChange(undefined)}>All Companies (Cases)</DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          {isLoadingCompanies ? (<DropdownMenuItem disabled>Loading...</DropdownMenuItem>) : (
+                            companies.map((company) => (
+                              <DropdownMenuItem key={company.company_id} onClick={() => handleCompanyForCaseFilterChange(company.company_id)} disabled={selectedCompanyForCaseFilter === company.company_id} >
+                                {company.name}
+                              </DropdownMenuItem>
+                            ))
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      {/* Case Dropdown */}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="outline" size="sm" className="flex items-center gap-1 min-w-[150px] justify-start" disabled={isLoadingCasesData}>
+                            <ListFilter className="h-4 w-4" />
+                            <span className="truncate">
+                               {selectedCaseNameForCaseTab ? `Case: ${selectedCaseNameForCaseTab}` : "Filter by Case"}
+                            </span>
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="max-h-80 overflow-y-auto">
+                          <DropdownMenuItem onClick={() => handleCaseFilterDropdownChange(undefined)}>
+                            {selectedCompanyForCaseFilter ? "All Cases (in Company)" : "All Cases"}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          {isLoadingCasesData ? (<DropdownMenuItem disabled>Loading cases...</DropdownMenuItem>) : (
+                            filteredCasesForDropdown.length === 0 ? (
+                              <DropdownMenuItem disabled>No cases found</DropdownMenuItem>
+                            ) : (
+                              filteredCasesForDropdown.map((caseItem) => (
+                                <DropdownMenuItem key={caseItem.case_id} onClick={() => handleCaseFilterDropdownChange(caseItem.case_id)} disabled={taskFilter.case_id === caseItem.case_id}>
+                                  {caseItem.case_title}
+                                </DropdownMenuItem>
+                              ))
+                            )
                           )}
                         </DropdownMenuContent>
                       </DropdownMenu>
